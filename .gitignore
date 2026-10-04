@@ -1,0 +1,13 @@
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+*.pdf
+*.ppt
+*.pptx
+*.zip
+*.docx
+artifacts/
