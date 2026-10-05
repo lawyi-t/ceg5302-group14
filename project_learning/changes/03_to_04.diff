@@ -1,0 +1,205 @@
+--- 03_constraints_mw7.py
++++ 04_rcm13.py
+@@ -1,12 +1,12 @@
+ # -*- coding: utf-8 -*-
+-"""第 3 阶段：新增约束处理与 MW7。
++"""第 4 阶段：新增第14组 RCM13 齿轮箱。
+ 
+ 这是包含此前功能的独立完整版本；只需要 NumPy 和 Matplotlib。
+-python 03_constraints_mw7.py             运行本阶段新增实验
+-python 03_constraints_mw7.py --quick     小规模流程检查，不用于报告结论
+-python 03_constraints_mw7.py --all       运行本文件已实现的全部实验
+-python 03_constraints_mw7.py --check-only  只运行明确的代码正确性检查
+-阅读时先看“阶段 03 新增”分段，再回看被复用的函数。
++python 04_rcm13.py             运行本阶段新增实验
++python 04_rcm13.py --quick     小规模流程检查，不用于报告结论
++python 04_rcm13.py --all       运行本文件已实现的全部实验
++python 04_rcm13.py --check-only  只运行明确的代码正确性检查
++阅读时先看“阶段 04 新增”分段，再回看被复用的函数。
+ """
+ 
+ 
+@@ -1004,5 +1004,183 @@
+ EXPERIMENTS["mw7"] = run_mw7
+ 
+ 
++# %% 阶段 04 新增 RCM13 模型（默认 literal_pdf）
++"""RCM13 gear-box model; the default reproduces the supplied course PDF.
++
++Only the engineering problem is defined here. No optimizer is imported.
++"""
++
++import numpy as np
++
++
++class RCM13:
++    """Seven-variable, three-objective gear-box design with 11 inequalities.
++
++    Source: Kumar et al. (2021), DOI 10.1016/j.swevo.2021.100961,
++    course ``RCM supp.pdf``, p. 9, section 1.1.13, equation (29).
++
++    The conventional speed-reducer interpretation is x1 = gear face width,
++    x2 = tooth module, x3 = pinion tooth count, x4/x5 = shaft bearing spans,
++    and x6/x7 = shaft diameters. The supplied section does not state units;
++    no physical unit or engineering certification is inferred here.
++    f1 is the supplied weight/volume proxy; f2 and f3 are shaft stresses.
++    All three objectives are minimized. All signed inequalities use g <= 0.
++
++    ``literal_pdf`` (default) preserves the course equation exactly:
++      f1 uses 14.9334/x3 and 3.3333*x3**2; x3 is the printed set {17, 28};
++      f2 uses 16.91e6; stress limits are 1100 and 850.
++    The set notation is ambiguous relative to publicly released code, so it
++    is made an explicit modeling convention, not silently corrected.
++
++    Two OPTIONAL source-specific sensitivity variants are kept separate:
++      ``platemo``: the public RWMOP13.m formula uses 14.933*x3,
++      (10/3)*x3**2, integer x3 in 17..28, 16.91e6, and 1100/850 limits.
++      ``author_code``: CEC2021_func.m, func == 13, uses the same f1 as
++      PlatEMO, integer x3 in 17..28, 16.9e6, and 1300/1100 limits.
++    They are different problem definitions; results must never be pooled.
++
++    Public cross-checks (accessed 2026-10-04):
++    https://github.com/BIMK/PlatEMO/blob/master/PlatEMO/Problems/Multi-objective%20optimization/RWMOPs/RWMOP13.m
++    https://github.com/P-N-Suganthan/2021-RW-MOP/blob/main/CEC2021-RWCMOP.zip
++
++    ``repair`` clips bounds and applies the selected tooth-count convention.
++    Call it when initializing and after variation, so stored designs equal
++    evaluated designs. ``evaluate`` defensively repairs a copy as well and
++    returns (F, C) with shapes (N, 3), (N, 11), C = maximum(g, 0).
++    Constraint order follows the course PDF, including stress limits at
++    columns 4 and 5 (zero-based). Bounds/discreteness are handled by repair.
++    """
++
++    name = "RCM13 Gear Box Design"
++    n_obj = 3
++    n_var = 7
++    n_con = 11
++    lower = np.array([2.6, 0.7, 17.0, 7.3, 7.3, 2.9, 5.0])
++    upper = np.array([3.6, 0.8, 28.0, 8.3, 8.3, 3.9, 5.5])
++    variable_names = ("face_width", "module", "teeth", "span_1", "span_2",
++                      "diameter_1", "diameter_2")
++    objective_names = ("weight_proxy", "shaft_1_stress", "shaft_2_stress")
++
++    def __init__(self, formulation="literal_pdf"):
++        allowed = ("literal_pdf", "platemo", "author_code")
++        if formulation not in allowed:
++            raise ValueError(f"formulation must be one of {allowed}")
++        self.formulation = formulation
++        self.lower = type(self).lower.copy()
++        self.upper = type(self).upper.copy()
++        self.stress_limits = np.array(
++            [1300.0, 1100.0] if formulation == "author_code" else [1100.0, 850.0]
++        )
++
++    def repair(self, X):
++        """Return a repaired copy, preserving vector-versus-matrix shape.
++
++        Literal-PDF tooth count uses the nearest of {17, 28}, with ties
++        assigned to 28. Reference variants round half-up to 17,...,28.
++        """
++        a = np.asarray(X, dtype=float)
++        if a.ndim not in (1, 2) or a.shape[-1] != self.n_var:
++            raise ValueError("X must have shape (7,) or (N, 7)")
++        if not np.all(np.isfinite(a)):
++            raise ValueError("X must contain finite decision values")
++        y = np.clip(a, self.lower, self.upper)
++        if self.formulation == "literal_pdf":
++            y[..., 2] = np.where(y[..., 2] < 22.5, 17.0, 28.0)
++        else:
++            y[..., 2] = np.floor(y[..., 2] + 0.5)
++        return y
++
++    def _objectives_and_signed_constraints(self, X):
++        x1, x2, x3, x4, x5, x6, x7 = np.atleast_2d(self.repair(X)).T
++        if self.formulation == "literal_pdf":
++            gear_term = 14.9334 / x3 - 43.0934 + 3.3333 * x3**2
++        else:
++            gear_term = (10.0 / 3.0) * x3**2 + 14.933 * x3 - 43.0934
++        stress_constant = 16.9e6 if self.formulation == "author_code" else 16.91e6
++        f1 = (0.7854 * x1 * x2**2 * gear_term
++              + 0.7854 * (x5 * x7**2 + x4 * x6**2)
++              - 1.508 * x1 * (x7**2 + x6**2)
++              + 7.477 * (x7**3 + x6**3))
++        f2 = 10.0 * np.sqrt(stress_constant + (745.0 * x4 / (x2 * x3))**2) / x6**3
++        f3 = 10.0 * np.sqrt(157.5e6 + (745.0 * x5 / (x2 * x3))**2) / x7**3
++        F = np.column_stack((f1, f2, f3))
++        G = np.column_stack((
++            1.0 / (x1 * x2**2 * x3) - 1.0 / 27.0,
++            1.0 / (x1 * x2**2 * x3**2) - 1.0 / 397.5,
++            x4**3 / (x2 * x6**4 * x3) - 1.0 / 1.93,
++            x5**3 / (x2 * x7**4 * x3) - 1.0 / 1.93,
++            f2 - self.stress_limits[0],
++            f3 - self.stress_limits[1],
++            x2 * x3 - 40.0,
++            -x1 / x2 + 5.0,
++            x1 / x2 - 12.0,
++            1.5 * x6 - x4 + 1.9,
++            1.1 * x7 - x5 + 1.9,
++        ))
++        return F, G
++
++    def evaluate(self, X):
++        """Evaluate repaired designs; return objectives and nonnegative CVs."""
++        F, G = self._objectives_and_signed_constraints(X)
++        return F, np.maximum(G, 0.0)
++
++    def constraint_values(self, X):
++        """Return signed PDF-order inequalities for independent feasibility QA."""
++        return self._objectives_and_signed_constraints(X)[1]
++
++
++# %% 阶段 04 公式参考值验证与齿轮箱实验
++def check_rcm13_model():
++    problem = RCM13()
++    X = np.array([[3.5, .7, 17, 7.8, 8, 3.6, 5.4],
++                  [3.6, .7, 28, 8, 8, 3.9, 5.5]])
++    expected = [[2807.2060504005, 887.574888292839394, 797.635660747925005],
++                [5287.98536988796, 695.123757558828309, 754.535463665066420]]
++    F, C = problem.evaluate(X)
++    np.testing.assert_allclose(F, expected, rtol=2e-14, atol=1e-11)
++    np.testing.assert_array_equal(C, np.zeros((2, 11)))
++    np.testing.assert_array_equal(problem.repair(X), X)
++    np.testing.assert_allclose(C, np.maximum(problem.constraint_values(X), 0))
++    probe = np.tile(X[0], (4, 1))
++    probe[:, 2] = [16, 22.49, 22.5, 29]
++    np.testing.assert_array_equal(problem.repair(probe)[:, 2], [17, 17, 28, 28])
++
++
++CHECKS.append(check_rcm13_model)
++
++
++def run_rcm13(args):
++    # 明确建模约定：课程 PDF 字面定义；尚待老师确认来源差异。
++    problem = RCM13(formulation="literal_pdf")
++    result = run_case(problem, CNSGA2, basic_config(args, problem.n_var), args.seed)
++    mask = feasible_mask(result)
++    X, F = result["X"][mask], result["F"][mask]
++    if len(X):
++        require(np.all(problem.constraint_values(X) <= 0), "Feasible design violates g <= 0")
++    fig = plt.figure(figsize=(10.5, 4.2))
++    ax = fig.add_subplot(121, projection="3d")
++    for tooth, color in [(17, COLORS[0]), (28, COLORS[1])]:
++        selected = X[:, 2] == tooth
++        ax.scatter(*F[selected].T, color=color, s=20, label=f"{tooth} teeth")
++    ax.set(xlabel="Weight proxy", ylabel="Shaft 1 stress", zlabel="Shaft 2 stress", title="RCM13")
++    ax.view_init(elev=22, azim=-53)
++    ax.legend(fontsize=8)
++    ax2 = fig.add_subplot(122)
++    ax2.plot([h["n_eval"] for h in result["history"]],
++             [h["feasible_ratio"] for h in result["history"]], marker=".")
++    ax2.set(xlabel="Objective evaluations", ylabel="Feasible fraction", ylim=(-.02, 1.02),
++            title="Constraint satisfaction over the run")
++    finish_figure(fig, "rcm13_results")
++    export_run(result, problem, dict(problem="RCM13", formulation=problem.formulation,
++                teeth_17=int(np.sum(X[:, 2] == 17)), teeth_28=int(np.sum(X[:, 2] == 28))))
++    display("Model convention: literal course PDF, x3 in {17,28}, f1 includes 14.9334/x3. "
++            "Public implementations differ; this convention is explicit but not teacher-confirmed. "
++            "Stage 05 adds repeated parameter comparisons; one successful run is not evidence "
++            "that this parameter setting is best.")
++
++
++EXPERIMENTS["rcm13"] = run_rcm13
++
++
+ if __name__ == "__main__":
+     main()

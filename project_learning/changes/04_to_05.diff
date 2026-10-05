@@ -1,0 +1,214 @@
+--- 04_rcm13.py
++++ 05_parameter_experiments.py
+@@ -1,12 +1,12 @@
+ # -*- coding: utf-8 -*-
+-"""第 4 阶段：新增第14组 RCM13 齿轮箱。
++"""第 5 阶段：新增重复实验与参数比较。
+ 
+ 这是包含此前功能的独立完整版本；只需要 NumPy 和 Matplotlib。
+-python 04_rcm13.py             运行本阶段新增实验
+-python 04_rcm13.py --quick     小规模流程检查，不用于报告结论
+-python 04_rcm13.py --all       运行本文件已实现的全部实验
+-python 04_rcm13.py --check-only  只运行明确的代码正确性检查
+-阅读时先看“阶段 04 新增”分段，再回看被复用的函数。
++python 05_parameter_experiments.py             运行本阶段新增实验
++python 05_parameter_experiments.py --quick     小规模流程检查，不用于报告结论
++python 05_parameter_experiments.py --all       运行本文件已实现的全部实验
++python 05_parameter_experiments.py --check-only  只运行明确的代码正确性检查
++阅读时先看“阶段 05 新增”分段，再回看被复用的函数。
+ """
+ 
+ 
+@@ -1182,5 +1182,192 @@
+ EXPERIMENTS["rcm13"] = run_rcm13
+ 
+ 
++# %% 阶段 05 新增参数比较和独立验证
++def run_parameters(args):
++    """本阶段新增：9组 OFAT、3组等预算对照和独立种子验证。"""
++    SEEDS = [args.seed + 100*i for i in range(2 if args.quick else 5)]
++    RCM_FORMULATION = "literal_pdf"
++    rcm_problem = RCM13(formulation=RCM_FORMULATION)
++    rcm_baseline = basic_config(args, 7)
++    populations = [20, 40, 80] if args.quick else [50, 100, 200]
++    generations = [30, 60, 120] if args.quick else [200, 500, 1000]
++    budget = 8000 if args.quick else 50000
++    rcm_configs = {"baseline": dict(rcm_baseline)}
++    factor_specs = {
++        "Population": ("pop_size", populations, [f"N{populations[0]}", "baseline", f"N{populations[2]}"]),
++        "Crossover": ("pc", [.6, .9, 1.0], ["pc0.6", "baseline", "pc1.0"]),
++        "Mutation": ("pm", [.5/7, 1/7, 2/7], ["pm0.5/n", "baseline", "pm2/n"]),
++        "Generations": ("max_gen", generations, [f"G{generations[0]}", "baseline", f"G{generations[2]}"]),
++    }
++    for factor, (parameter, values, labels) in factor_specs.items():
++        for value, label in zip(values, labels):
++            rcm_configs[label] = dict(rcm_baseline, **{parameter: value})
++    tuning_labels = list(rcm_configs)
++    for n in populations:
++        rcm_configs[f"budget_N{n}"] = dict(rcm_baseline, pop_size=n, max_gen=budget//n-1)
++    rcm_runs = {}
++    for label, config in rcm_configs.items():
++        rcm_runs[label] = [run_case(rcm_problem, CNSGA2, config, seed) for seed in SEEDS]
++        print(f"{label:12s}: {len(SEEDS)} seeds, N={config['pop_size']}, "
++              f"G={config['max_gen']}, evaluations/run={rcm_runs[label][0]['n_eval']:,}")
++
++    # Freeze objective scaling ONCE for the complete tuning/control comparison.
++    # It is not a theoretical ideal/nadir; do not compare HV to other formulations.
++    rcm_pool = np.vstack([feasible_front(r) for runs in rcm_runs.values() for r in runs])
++    if not len(rcm_pool):
++        raise RuntimeError("No RCM feasible solution found; do not report a false Pareto front")
++    rcm_lo, rcm_hi = rcm_pool.min(axis=0), rcm_pool.max(axis=0)
++    rcm_pooled_front = np.unique(rcm_pool[non_dominated(rcm_pool)], axis=0)
++    # A voxel-stratified empirical reference avoids simply weighting each dense run
++    # equally many times. It remains data-dependent and is not a known true front.
++    voxels = np.floor(normalize_objectives(rcm_pooled_front, rcm_lo, rcm_hi)*25).astype(int)
++    _, reference_indices = np.unique(voxels, axis=0, return_index=True)
++    rcm_reference = rcm_pooled_front[np.sort(reference_indices)]
++
++
++    def score_rcm_run(r):
++        F = feasible_front(r)
++        spacing = normalized_spacing(F, rcm_lo, rcm_hi)
++        return dict(seed=r["seed"], feasible=float(np.mean(r["CV"] == 0)),
++            max_cv=float(np.max(r["CV"])), n_nd=len(F),
++            n_unique=len(np.unique(F, axis=0)),
++            teeth_17=int(np.sum((r["X"][:, 2] == 17) & (r["CV"] == 0))),
++            teeth_28=int(np.sum((r["X"][:, 2] == 28) & (r["CV"] == 0))),
++            outside_hv_reference=int(np.sum(np.any(normalize_objectives(F, rcm_lo, rcm_hi) >= 1.1, axis=1))),
++            hv=normalized_hypervolume_3d(F, rcm_lo, rcm_hi, reference=1.1),
++            igd=normalized_igd(rcm_reference, F, rcm_lo, rcm_hi),
++            nn_cv=spacing["cv_nn"], seconds=r["seconds"], n_eval=r["n_eval"])
++
++
++    rcm_scores = {label: [score_rcm_run(r) for r in runs] for label, runs in rcm_runs.items()}
++    rcm_summary = {}
++    for label, scores in rcm_scores.items():
++        row = dict(config=rcm_configs[label])
++        for key in ["hv", "igd", "feasible", "nn_cv", "seconds", "n_nd"]:
++            row[key + "_mean"], row[key + "_sd"] = mean_sd([s[key] for s in scores])
++        row["n_eval"] = scores[0]["n_eval"]
++        rcm_summary[label] = row
++    show_table(["Config", "N", "pc", "pm", "G", "Evaluations", "HV mean", "HV SD", "Emp. IGD", "Feasible"],
++        [[label, *[s["config"][k] for k in ["pop_size", "pc", "pm", "max_gen"]],
++          s["n_eval"], s["hv_mean"], s["hv_sd"], s["igd_mean"], s["feasible_mean"]]
++         for label, s in rcm_summary.items()])
++    best_label = max(tuning_labels, key=lambda label: rcm_summary[label]["hv_mean"])
++    best_config = rcm_configs[best_label]
++    display(Markdown(f"**Selected configuration:** `{best_label}` = `{best_config}`. "
++        "Selection maximizes mean normalized HV over the tuning seeds among "
++        "the nine OFAT configurations. This is the best tested setting, not a global "
++        "parameter optimum. The equal-budget controls are evaluated separately. "
++        f"The empirical reference has {len(rcm_reference)} points; the normalization "
++        f"bounds are `{rcm_lo.round(5).tolist()}` and `{rcm_hi.round(5).tolist()}`. "
++        "All comparisons use the same bounds and HV reference (1.1, 1.1, 1.1)."))
++
++    fig, axes = plt.subplots(2, 2, figsize=(10.7, 7))
++    for ax, (factor, (parameter, values, labels)) in zip(axes.flat, factor_specs.items()):
++        values_for_axis = [v*7 for v in values] if parameter == "pm" else values
++        avg = [rcm_summary[label]["hv_mean"] for label in labels]
++        sd = [rcm_summary[label]["hv_sd"] for label in labels]
++        ax.errorbar(values_for_axis, avg, yerr=sd, marker="o", capsize=4,
++                     color=COLORS[0], lw=1.5)
++        ax.set(xlabel="Mutation multiplier / n_var" if parameter == "pm" else parameter,
++               ylabel="Normalized HV (mean ± sample SD)", title=factor)
++        ax.set_xticks(values_for_axis)
++    finish_figure(fig, "rcm_parameter_analysis")
++
++    # Holdout seeds were not used for parameter selection or normalization.
++    HOLDOUT_SEEDS = [s + 1000 for s in SEEDS]
++    holdout_runs = {"baseline": [run_case(rcm_problem, CNSGA2, rcm_baseline, seed)
++                                  for seed in HOLDOUT_SEEDS]}
++    holdout_runs["selected"] = [run_case(rcm_problem, CNSGA2, best_config, seed)
++                                for seed in HOLDOUT_SEEDS]
++    holdout_scores = {label: [score_rcm_run(r) for r in runs] for label, runs in holdout_runs.items()}
++    holdout_summary = {}
++    for label, scores in holdout_scores.items():
++        holdout_summary[label] = {}
++        for key in ["hv", "igd", "feasible", "nn_cv", "seconds"]:
++            avg, sd = mean_sd([s[key] for s in scores])
++            holdout_summary[label][key + "_mean"] = avg
++            holdout_summary[label][key + "_sd"] = sd
++    show_table(["Holdout config", "HV mean", "HV SD", "Empirical IGD", "Feasible fraction"],
++        [[label, s["hv_mean"], s["hv_sd"], s["igd_mean"], s["feasible_mean"]]
++         for label, s in holdout_summary.items()])
++
++    # A predeclared holdout seed (1014), not the best-looking seed, supplies the
++    # representative final population and design table requested by the assignment.
++    rcm_final = holdout_runs["selected"][0]
++    optimum_x, optimum_fx = rcm_final["X"], rcm_final["F"]
++    rcm_feasible_mask = rcm_final["CV"] == 0.0
++    rcm_nd_mask = np.zeros(len(optimum_fx), dtype=bool)
++    rcm_nd_mask[rcm_feasible_mask] = non_dominated(optimum_fx[rcm_feasible_mask])
++    rcm_final_x, rcm_final_f = optimum_x[rcm_nd_mask], optimum_fx[rcm_nd_mask]
++    require(len(rcm_final_x) > 0, "RCM final verification failed")
++    require(np.all(rcm_problem.constraint_values(rcm_final_x) <= 0), "RCM final verification failed")
++    require(np.array_equal(rcm_final_x, rcm_problem.repair(rcm_final_x)), "RCM final verification failed")
++    norm = normalize_objectives(rcm_final_f, rcm_lo, rcm_hi)
++    display_indices = list(dict.fromkeys([*np.argmin(rcm_final_f, axis=0).tolist(),
++                                         int(np.argmin(np.linalg.norm(norm, axis=1)))]))
++    show_table(["Design", *[f"x{i}" for i in range(1, 8)], "f1", "f2", "f3", "Max g"],
++        [[i, *rcm_final_x[i], *rcm_final_f[i],
++          float(rcm_problem.constraint_values(rcm_final_x[i]).max())] for i in display_indices])
++    print("Full final design/objective/constraint table: rcm_final_designs.csv")
++
++    fig = plt.figure(figsize=(11, 4.4))
++    ax = fig.add_subplot(121, projection="3d")
++    for tooth, color in [(17, "#156082"), (28, "#E97132")]:
++        selected_teeth = rcm_final_x[:, 2] == tooth
++        ax.scatter(*rcm_final_f[selected_teeth].T, color=color, s=19, label=f"{tooth} teeth")
++    ax.set(xlabel="$f_1$: weight proxy", ylabel="$f_2$: shaft 1 stress",
++           zlabel="$f_3$: shaft 2 stress", title=f"RCM13: {best_label}, holdout seed {HOLDOUT_SEEDS[0]}")
++    ax.view_init(elev=22, azim=-53)
++    ax.legend(fontsize=8, loc="upper left")
++    ax2 = fig.add_subplot(122)
++    for label, color in [("baseline", COLORS[1]), ("selected", COLORS[0])]:
++        run = holdout_runs[label][0]
++        curve = [normalized_hypervolume_3d(h["F"][h["CV"] == 0], rcm_lo, rcm_hi)
++                 for h in run["history"]]
++        ax2.plot([h["n_eval"] for h in run["history"]], curve, marker=".",
++                 color=color, label=label)
++    ax2.set(xlabel="Objective evaluations (including initialization)",
++            ylabel="Normalized feasible-set HV", title="Convergence at a common scale")
++    ax2.legend()
++    finish_figure(fig, "rcm_final_results")
++
++    # Preserve the numerical experiment record outside the submission only when
++    # exporting is explicitly enabled by the build environment.
++    if ARTIFACT_DIR:
++        np.savetxt(ARTIFACT_DIR/"rcm_final_designs.csv",
++                   np.column_stack((rcm_final_x, rcm_final_f,
++                                    rcm_problem.constraint_values(rcm_final_x))),
++                   delimiter=",", header=",".join([*[f"x{i}" for i in range(1,8)],
++                        "f1","f2","f3", *[f"g{i}" for i in range(1,12)]]), comments="")
++        rows = []
++        for label, scores in rcm_scores.items():
++            rows.extend(dict(label=label, **s, **rcm_configs[label]) for s in scores)
++        with (ARTIFACT_DIR/"rcm_experiments.csv").open("w", newline="", encoding="utf-8") as stream:
++            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
++            writer.writeheader()
++            writer.writerows(rows)
++
++    holdout_rows = [dict(label=label, **s) for label, scores in holdout_scores.items() for s in scores]
++    with (ARTIFACT_DIR/"rcm_holdout.csv").open("w", newline="", encoding="utf-8") as stream:
++        writer = csv.DictWriter(stream, fieldnames=list(holdout_rows[0]))
++        writer.writeheader()
++        writer.writerows(holdout_rows)
++    save_json("summary.json", dict(
++        formulation=RCM_FORMULATION, quick=args.quick, tuning_seeds=SEEDS,
++        holdout_seeds=HOLDOUT_SEEDS, tuning_labels=tuning_labels, configs=rcm_configs,
++        best_label=best_label, best_config=best_config, lo=rcm_lo, hi=rcm_hi,
++        empirical_reference=rcm_reference, hv_reference=[1.1]*3,
++        tuning_summary=rcm_summary, holdout_summary=holdout_summary,
++        tuning_scores=rcm_scores, holdout_scores=holdout_scores,
++        total_rcm_runs=sum(map(len, rcm_runs.values())) + sum(map(len, holdout_runs.values())),
++        feasible_final_members=len(rcm_final_x), unique_final_objectives=len(np.unique(rcm_final_f, axis=0))))
++    display("HV uses one frozen scale and reference point; the empirical IGD reference is NOT a true front. "
++            "The selected setting is only the best of the tested OFAT configurations. "
++            "Confirm the RCM13 formula convention with the course instructor before final submission.")
++
++
++EXPERIMENTS["parameters"] = run_parameters
++
++
+ if __name__ == "__main__":
+     main()

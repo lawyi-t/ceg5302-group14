@@ -1,0 +1,176 @@
+--- 02_crashworthiness.py
++++ 03_constraints_mw7.py
+@@ -1,12 +1,12 @@
+ # -*- coding: utf-8 -*-
+-"""第 2 阶段：新增汽车碰撞安全实验。
++"""第 3 阶段：新增约束处理与 MW7。
+ 
+ 这是包含此前功能的独立完整版本；只需要 NumPy 和 Matplotlib。
+-python 02_crashworthiness.py             运行本阶段新增实验
+-python 02_crashworthiness.py --quick     小规模流程检查，不用于报告结论
+-python 02_crashworthiness.py --all       运行本文件已实现的全部实验
+-python 02_crashworthiness.py --check-only  只运行明确的代码正确性检查
+-阅读时先看“阶段 02 新增”分段，再回看被复用的函数。
++python 03_constraints_mw7.py             运行本阶段新增实验
++python 03_constraints_mw7.py --quick     小规模流程检查，不用于报告结论
++python 03_constraints_mw7.py --all       运行本文件已实现的全部实验
++python 03_constraints_mw7.py --check-only  只运行明确的代码正确性检查
++阅读时先看“阶段 03 新增”分段，再回看被复用的函数。
+ """
+ 
+ 
+@@ -855,5 +855,154 @@
+ EXPERIMENTS["crash"] = run_crash
+ 
+ 
++# %% 阶段 03 新增可行性优先的 CNSGA2
++class CNSGA2(NSGA2):
++    """NSGA-II with parameter-less constraint dominance.
++
++    Feasible solutions dominate infeasible ones. Between infeasible solutions,
++    lower total violation wins. Between feasible solutions, objective Pareto
++    dominance applies. Equal positive violation does not break ties by F.
++    """
++
++    def _dominance_matrix(self, F, CV=None):
++        if CV is None:
++            return self._objective_dominance(F)
++        CV = np.asarray(CV, dtype=float).reshape(-1)
++        if CV.shape != (len(F),) or np.any(CV < 0) or not np.isfinite(CV).all():
++            raise ValueError("CV must be a finite nonnegative vector")
++        feasible = CV == 0.0
++        objective_dominance = self._objective_dominance(F)
++        both_feasible = feasible[:, None] & feasible[None, :]
++        feasible_over_infeasible = feasible[:, None] & ~feasible[None, :]
++        both_infeasible = ~feasible[:, None] & ~feasible[None, :]
++        lower_violation = CV[:, None] < CV[None, :]
++        return ((both_feasible & objective_dominance)
++                | feasible_over_infeasible | (both_infeasible & lower_violation))
++
++
++# %% 阶段 03 老师提供的 MW7 模型（源代码保留）
++class MW7():
++
++    def __init__(self):
++        self.name = 'MW7'
++        self.n_obj = 2  # number of objectives
++        self.n_var = 15  # number of decision variables
++        self.n_con = 2  # number of constraints
++
++        self.lower = np.zeros(self.n_var)
++        self.upper = np.ones(self.n_var)
++
++    def evaluate(self, x):
++        pop_size = len(x)
++        f = np.zeros((pop_size, self.n_obj))
++        c = np.zeros((pop_size, self.n_con))
++
++        g3 = 1 + 2.0 * np.sum((x[:, self.n_obj - 1:] +
++                               (x[:, self.n_obj - 2:-1] - 0.5)**2 - 1.0)**2,
++                              axis=1)
++
++        f[:, 0] = g3 * x[:, 0]
++        f[:, 1] = g3 * (1 - (f[:, 0] / g3)**2)**0.5
++
++        with np.errstate(divide='ignore'):
++            l = np.arctan(f[:, 1] / f[:, 0])
++
++        c[:, 0] = (1.2 + 0.4 * (np.sin(4 * l))**16)**2 - f[:, 0]**2 - f[:, 1]**2
++        c[:, 1] = f[:, 0]**2 + f[:, 1]**2 - (1.15 - 0.2 * (np.sin(4 * l))**8)**2
++        c = np.where(c < 0, -c, 0)  # the degree of constraint violation of x at each constraint
++
++        return f, c
++
++
++# %% 阶段 03 MW7 数值参考前沿
++def mw7_reference_front(n_angles=100001, n_points=None):
++    """Dense NUMERICAL reference front derived from the supplied MW7 equations.
++
++    Set theta=atan2(f2,f1) in [0,pi/2]. The radial objectives have radius g3>=1.
++    Feasibility requires 1.15-0.2*sin(4*theta)**8 <= g3 <=
++    1.2+0.4*sin(4*theta)**16. Thus the feasible radial lower boundary has
++    r=max(1, 1.15-0.2*sin(4*theta)**8). Some points on that boundary are globally
++    dominated, so they MUST be filtered. We sample the boundary and retain its
++    globally nondominated subset. This is a dense numerical approximation to
++    the constrained front, not a claim that every radial-boundary point is PF.
++
++    The bound g3=1 is attainable by x[i]=1-(x[i-1]-.5)**2. Required radii up to
++    1.15 are attainable by lowering only the last variable by sqrt((r-1)/2),
++    which remains inside [0,1]. Optional n_points uniformly subsamples the
++    retained index sequence (not a curve interpolated across front gaps).
++    """
++    if int(n_angles) != n_angles or n_angles < 1001:
++        raise ValueError("n_angles must be an integer >=1001")
++    theta = np.linspace(0.0, np.pi / 2, int(n_angles))
++    wave = np.sin(4 * theta) ** 8
++    radius = np.maximum(1.0, 1.15 - 0.2 * wave)
++    F = np.column_stack((radius * np.cos(theta), radius * np.sin(theta)))
++    # Exact endpoints avoid floating residuals from cos(pi/2).
++    F[0, 1] = 0.0
++    F[-1, 0] = 0.0
++    F = F[non_dominated(F)]
++    F = F[np.argsort(F[:, 0])]
++    if n_points is not None:
++        if int(n_points) != n_points or n_points < 2:
++            raise ValueError("n_points must be an integer >=2")
++        if n_points < len(F):
++            F = F[np.round(np.linspace(0, len(F)-1, int(n_points))).astype(int)]
++    return F
++
++
++# %% 阶段 03 约束规则验证与 MW7 实验
++def check_constraint_rules():
++    F = np.array([[100, 100], [0, 0], [-1, -1], [200, 200], [101, 101]])
++    CV = np.array([0., 1., 2., 1., 0.])
++    opt = CNSGA2(pop_size=2)
++    ranks, _ = opt.non_dominated_sort(F, CV)
++    np.testing.assert_array_equal(ranks, [0, 2, 3, 2, 1])
++    dominance = opt._dominance_matrix(F, CV)
++    require(not dominance[1, 3] and not dominance[3, 1], "Equal positive CV must tie")
++    X, _, C = opt.environmental_selection(np.arange(5)[:, None], F, CV[:, None])
++    require(set(X[:, 0]) == {0, 4}, "Feasible members must beat infeasible members")
++    require(np.all(C == 0), "Wrong constrained elites")
++    _, violations = MW7().evaluate(np.zeros((2, 15)))
++    require(np.all(violations >= 0), "MW7 already returns nonnegative violations")
++
++
++CHECKS.append(check_constraint_rules)
++
++
++def run_mw7(args):
++    problem = MW7()
++    result = run_case(problem, CNSGA2, basic_config(args, problem.n_var), args.seed)
++    reference = mw7_reference_front(n_points=2000)
++    lo, hi = reference.min(axis=0), reference.max(axis=0)
++    front = feasible_front(result)
++    stats = dict(problem="MW7", gd=normalized_gd(reference, front, lo, hi),
++                 igd=normalized_igd(reference, front, lo, hi),
++                 segments_hit=segment_coverage(front, reference, lo, hi), total_segments=3)
++    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4))
++    draw_reference(axes[0], reference, "Numerical constrained front")
++    feasible = result["CV"] == 0
++    axes[0].scatter(*result["F"][feasible].T, s=17, label="Feasible final members")
++    if np.any(~feasible):
++        axes[0].scatter(*result["F"][~feasible].T, s=20, marker="x", label="Infeasible members")
++    axes[0].set(xlabel="f1", ylabel="f2", title="MW7: feasibility and coverage")
++    axes[0].legend(fontsize=8)
++    curve = [normalized_igd(reference, h["F"][h["CV"] == 0], lo, hi)
++             for h in result["history"]]
++    axes[1].plot([h["n_eval"] for h in result["history"]],
++                 [v if np.isfinite(v) else np.nan for v in curve], marker=".")
++    axes[1].set(xlabel="Objective evaluations", ylabel="Feasible-set IGD", yscale="log",
++                title="Missing feasible sets leave gaps")
++    finish_figure(fig, "mw7_results")
++    export_run(result, problem, stats)
++    if stats["segments_hit"] < 3:
++        display("[WARN] Not all three front segments were reached. Feasibility does not prove coverage.")
++    display("Disconnected feasible regions and finite-population search can lose segments. "
++            "A low GD with high IGD is consistent with partial coverage; more generations do not "
++            "guarantee recovery. Compare multiple seeds before drawing general conclusions.")
++
++
++EXPERIMENTS["mw7"] = run_mw7
++
++
+ if __name__ == "__main__":
+     main()

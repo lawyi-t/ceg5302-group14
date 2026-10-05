@@ -1,0 +1,142 @@
+--- 01_nsga2_zdt3.py
++++ 02_crashworthiness.py
+@@ -1,12 +1,12 @@
+ # -*- coding: utf-8 -*-
+-"""第 1 阶段：基础 NSGA-II 与 ZDT3。
++"""第 2 阶段：新增汽车碰撞安全实验。
+ 
+ 这是包含此前功能的独立完整版本；只需要 NumPy 和 Matplotlib。
+-python 01_nsga2_zdt3.py             运行本阶段新增实验
+-python 01_nsga2_zdt3.py --quick     小规模流程检查，不用于报告结论
+-python 01_nsga2_zdt3.py --all       运行本文件已实现的全部实验
+-python 01_nsga2_zdt3.py --check-only  只运行明确的代码正确性检查
+-阅读时先看“阶段 01 新增”分段，再回看被复用的函数。
++python 02_crashworthiness.py             运行本阶段新增实验
++python 02_crashworthiness.py --quick     小规模流程检查，不用于报告结论
++python 02_crashworthiness.py --all       运行本文件已实现的全部实验
++python 02_crashworthiness.py --check-only  只运行明确的代码正确性检查
++阅读时先看“阶段 02 新增”分段，再回看被复用的函数。
+ """
+ 
+ 
+@@ -740,5 +740,120 @@
+ EXPERIMENTS["zdt3"] = run_zdt3
+ 
+ 
++# %% 阶段 02 新增三目标 HV 工具
++def _hypervolume_2d(F, reference):
++    """Area of the union of minimization rectangles, with valid corners only."""
++    if len(F) == 0:
++        return 0.0
++    order = np.argsort(F[:, 0], kind="stable")
++    sorted_F = F[order]
++    best_y = np.minimum.accumulate(sorted_F[:, 1])
++    widths = np.diff(np.r_[sorted_F[:, 0], reference[0]])
++    return float(np.dot(widths, reference[1] - best_y))
++
++
++def hypervolume_3d(F, reference=1.1):
++    """EXACT 3D dominated hypervolume by an x sweep and exact 2D slices.
++
++    F must contain normalized, feasible objective vectors, all minimized.
++    Feasibility cannot be inferred here: the caller must select feasible rows.
++    The function defensively removes dominated rows and equal duplicates.
++    reference is a fixed scalar or length-3 vector, normally [1.1]*3 shared by
++    ALL configurations. Points at or beyond reference in ANY coordinate cannot
++    dominate a positive-volume box and are excluded, not projected inwards.
++    Negative coordinates are allowed and not clipped; they mean an observation
++    improved on the fixed lower normalization bound. The returned volume is in
++    normalized objective units and is NOT divided by 1.1**3. This is not a Monte
++    Carlo estimate. Larger is better with a common scale and reference point.
++    """
++    F = _matrix(F, 3)
++    reference = np.asarray(reference, dtype=float)
++    if reference.ndim == 0:
++        reference = np.full(3, float(reference))
++    if reference.shape != (3,) or not np.all(np.isfinite(reference)):
++        raise ValueError("reference must be a finite scalar or length-3 vector")
++    F = F[np.all(F < reference, axis=1)]
++    if not len(F):
++        return 0.0
++    F = np.unique(F[non_dominated(F)], axis=0)
++    x_values = np.unique(F[:, 0])
++    widths = np.diff(np.r_[x_values, reference[0]])
++    volume = 0.0
++    for x, width in zip(x_values, widths):
++        volume += width * _hypervolume_2d(F[F[:, 0] <= x, 1:], reference[1:])
++    return float(volume)
++
++
++def normalized_hypervolume_3d(F, lo, hi, reference=1.1):
++    """Convenience wrapper retaining a fixed shared normalization and reference."""
++    return hypervolume_3d(normalize_objectives(F, lo, hi), reference)
++
++
++# %% 阶段 02 老师提供的汽车模型（源代码保留）
++class CrashworthinessDesign():
++
++    def __init__(self):
++        self.name = 'Crashworthiness design of vehicles'
++        self.n_obj = 3
++        self.n_var = 5
++
++        self.lower = np.full(self.n_var, 1.0)
++        self.upper = np.full(self.n_var, 3.0)
++
++    def evaluate(self, x):
++        pop_size = len(x)
++        f = np.zeros((pop_size, self.n_obj))
++
++        x1 = x[:, 0]
++        x2 = x[:, 1]
++        x3 = x[:, 2]
++        x4 = x[:, 3]
++        x5 = x[:, 4]
++
++        f[:, 0] = 1640.2823 + (2.3573285 * x1) + (2.3220035 * x2) + (
++            4.5688768 * x3) + (7.7213633 * x4) + (4.4559504 * x5)
++        f[:, 1] = 6.5856 + (1.15 * x1) - (1.0427 * x2) + (0.9738 * x3) + (
++            0.8364 * x4) - (0.3695 * x1 * x4) + (0.0861 * x1 * x5) + (
++                0.3628 * x2 * x4) - (0.1106 * x1 * x1) - (0.3437 * x3 * x3) + (
++                    0.1764 * x4 * x4)
++        f[:, 2] = -0.0551 + (0.0181 * x1) + (0.1024 * x2) + (0.0421 * x3) - (
++            0.0073 * x1 * x2) + (0.024 * x2 * x3) - (0.0118 * x2 * x4) - (
++                0.0204 * x3 * x4) - (0.008 * x3 * x5) - (0.0241 * x2 * x2) + (
++                    0.0109 * x4 * x4)
++
++        return f
++
++
++# %% 阶段 02 新增汽车设计实验
++def run_crash(args):
++    problem = CrashworthinessDesign()
++    result = run_case(problem, NSGA2, basic_config(args, problem.n_var), args.seed)
++    front = feasible_front(result)
++    # 本阶段只有一次实验；这一尺度只用于该图，不跨运行比较 HV。
++    lo, hi = result["F"].min(axis=0), result["F"].max(axis=0)
++    require(np.all(hi > lo), "Degenerate objectives: cannot normalize")
++    spacing = normalized_spacing(front, lo, hi)
++    fig = plt.figure(figsize=(10.5, 4.2))
++    ax = fig.add_subplot(121, projection="3d")
++    ax.scatter(*result["F"].T, s=18, c=result["F"][:, 0], cmap="viridis")
++    ax.set(xlabel="Weight", ylabel="Acceleration", zlabel="Intrusion", title="Crashworthiness")
++    ax.view_init(elev=23, azim=-52)
++    ax2 = fig.add_subplot(122)
++    for row in normalize_objectives(front, lo, hi):
++        ax2.plot(range(3), row, alpha=.25, color=COLORS[0])
++    ax2.set(xticks=range(3), xticklabels=["Weight", "Acceleration", "Intrusion"],
++            ylabel="Normalized value (this run only)", title="Trade-offs")
++    finish_figure(fig, "crash_results")
++    export_run(result, problem, dict(problem="Crashworthiness", nn_cv=spacing["cv_nn"],
++               normalization_scope="this run only; do not compare to other runs", lo=lo, hi=hi))
++    display("Uneven spacing can remain on a curved three-objective surface: crowding distance "
++            "sums one-dimensional neighbour gaps and protects boundaries. Raw objective scale "
++            "alone is not the cause because crowding is range-normalized. Larger populations "
++            "or alternative diversity rules are suggestions, not improvements tested here.")
++
++
++EXPERIMENTS["crash"] = run_crash
++
++
+ if __name__ == "__main__":
+     main()
