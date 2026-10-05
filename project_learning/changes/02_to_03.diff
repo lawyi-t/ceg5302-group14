@@ -164,7 +164,7 @@
 +    export_run(result, problem, stats)
 +    if stats["segments_hit"] < 3:
 +        display("[WARN] Not all three front segments were reached. Feasibility does not prove coverage.")
-+    display("Disconnected feasible regions and finite-population search can lose segments. "
++    display("Disconnected Pareto-front segments and finite-population search can lose segments. "
 +            "A low GD with high IGD is consistent with partial coverage; more generations do not "
 +            "guarantee recovery. Compare multiple seeds before drawing general conclusions.")
 +
