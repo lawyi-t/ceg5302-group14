@@ -1,0 +1,47 @@
+{
+  "original_notebook": "project/main-2k26-Aug/CEG5302_Group_Project.ipynb",
+  "completed_notebook": "output/group14/CEG5302_Group_Project_14.ipynb",
+  "original_export_sha256": "2d13ca361cb8600402a01c382ce1256fd81299e40a716232b9f8e0f65c319130",
+  "original_model_sha256": {
+    "ZDT3": "3bc898e1ef86e126b15e8e1aa82b0fabecedb32d436ac7e4c21a5ab87d9b6a05",
+    "CrashworthinessDesign": "79fa41e718e567802796655fb35e165edf7fed6941a31a63aa9336ab5451eec8",
+    "MW7": "a8afcc11e7821135dc46c8226f1541605cd4289700db73e7a99a6eed4c95ef9c"
+  },
+  "stages": [
+    {
+      "file": "01_nsga2_zdt3.py",
+      "title": "基础 NSGA-II 与 ZDT3",
+      "lines": 744,
+      "source_sha256": "9cdeb2f242e6eb2bdd90aea0f781eeba00731b644b6fb555428304a0fdf435a9",
+      "body_sha256": "e5fb5c5044ea7fe1c4b0414c1ffcc834f3b7cd2945c10d0c3a7ea0122b11d58c"
+    },
+    {
+      "file": "02_crashworthiness.py",
+      "title": "新增汽车碰撞安全实验",
+      "lines": 859,
+      "source_sha256": "df8f6d280cb1e96336cd1270de59cfb92112e507a827d54d468acd1d1708549c",
+      "body_sha256": "8b3fbdfefd98106c507a106f37db4c78b8d07c975af174cf893c08c4ac48dbff"
+    },
+    {
+      "file": "03_constraints_mw7.py",
+      "title": "新增约束处理与 MW7",
+      "lines": 1008,
+      "source_sha256": "6bdba80242fa17098fbdc2efd033f368c791e9e25c0fedb0abe8b838fb762473",
+      "body_sha256": "a998607b3b7e53ca0fce541f914073269925d883399870743a1669f8c31d3355"
+    },
+    {
+      "file": "04_rcm13.py",
+      "title": "新增第14组 RCM13 齿轮箱",
+      "lines": 1186,
+      "source_sha256": "72e8329cced03fb245c8af614779bbf9bdce985cef3e0fe80dd2de7c2930671a",
+      "body_sha256": "08dd7dc3d1312bab95b90b8fbe307665bb9b2459323c4bd4aba60fa9fad6d8ab"
+    },
+    {
+      "file": "05_parameter_experiments.py",
+      "title": "新增重复实验与参数比较",
+      "lines": 1373,
+      "source_sha256": "551963d1c8202ee1aa907eb40d8dad1f42fac72bdb74f88baf042cf89cff44ec",
+      "body_sha256": "49aefa6f876e378a551f848504e96f24a241976679e606af412ffc12ba087a07"
+    }
+  ]
+}
